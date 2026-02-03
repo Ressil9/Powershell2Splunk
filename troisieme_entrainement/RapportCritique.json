@@ -1,0 +1,14 @@
+[
+    {
+        "RAM_Used":  27.2,
+        "Status":  "ALERTE_CRITIQUE",
+        "Name":  "PROD-01",
+        "Owner":  "Equipe-Data"
+    },
+    {
+        "RAM_Used":  15.2,
+        "Status":  "ALERTE_CRITIQUE",
+        "Name":  "WEB-01",
+        "Owner":  "Equipe-Web"
+    }
+]

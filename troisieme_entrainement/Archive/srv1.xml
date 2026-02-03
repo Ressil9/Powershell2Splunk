@@ -1,0 +1,4 @@
+<server name="PROD-01">
+    <specs ram_gb="32" usage_percent="85" />
+    <owner>Equipe-Data</owner>
+</server>
