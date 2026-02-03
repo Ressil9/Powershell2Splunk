@@ -1,0 +1,7 @@
+<root>
+  <inventory>
+    <server name="SRV-WEB-01" status="Online" ip="192.168.1.10" />
+    <server name="SRV-DB-02" status="Offline" ip="192.168.1.11" />
+    <server name="SRV-MAIL-03" status="Online" ip="192.168.1.12" />
+  </inventory>
+</root>

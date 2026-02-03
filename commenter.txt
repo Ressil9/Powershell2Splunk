@@ -1,0 +1,171 @@
+Param(
+    [Parameter(Mandatory = $false)] [string] $xmlFilesPath,      # Chemin optionnel des fichiers XML à traiter
+    [Parameter(Mandatory = $false)] [string] $archivesFolderPath # Chemin optionnel du dossier d'archivage
+)
+
+try {
+    # ─── Chargement des modules nécessaires ───────────────────────────────────────
+    # Importe dynamiquement tous les modules (.psm1) présents dans le dossier \src
+    ".\src\*" | Get-ChildItem -include '*.psm1' | Import-Module -Force
+
+    $Global:exitCode = 0
+    Set-Location $psScriptroot # Se positionne dans le répertoire du script
+    
+    # Lecture du fichier de configuration JSON
+    $config = Get-Content .\config\config.json -Raw | ConvertFrom-Json
+
+    # Définition des dossiers (Priorité aux paramètres, sinon prend la config JSON)
+    $archivesFolder = if ($archivesFolderPath) { $archivesFolderPath } else { $config.archivesFolder }
+    $xmlPath = if ($xmlFilesPath) { $xmlFilesPath } else { $config.xmlFolder }
+    
+    # Récupération du temps de rétention des données
+    if ($config.dataExpirationTimeDay) {
+        $timeToDelete = $config.dataExpirationTimeDay
+    }
+
+    # Vérification de l'existence des dossiers sources et archives
+    if (!(Test-Path -path $xmlPath)) {
+        throw "Le chemin source n'existe pas : $xmlPath"
+        $Global:exitCode = 6
+    }
+    if (!(Test-Path -path $archivesFolder)) {
+        throw "Le dossier d'archive n'existe pas : $archivesFolder"
+        $Global:exitCode = 6
+    }
+
+    # Liste les fichiers de données Ranorex (.rxlog.data)
+    $files = Get-ChildItem -Path $xmlPath | Where-Object { ! $_.PSIsContainer -and $_.Name -like "*.rxlog.data" }
+
+    # Paramètres de connexion Splunk
+    $splunkToken = $config.splunkToken
+    $apiLinkSplunk = $config.apiLinkSplunk
+    $splunkSource = $config.splunkSource
+
+    write-log -message "Nombre de fichiers trouvés : $($files.Count)" -type "i"
+
+    foreach ($file in $files) {
+        write-log -message "Traitement du fichier : $($file.name)" -type "i"
+        
+        try {
+            # Lecture et conversion du contenu du fichier en objet XML
+            [xml]$xmlContent = Get-Content $file.FullName
+    
+            # Extraction des nœuds de type 'test-case'
+            $all_activities = $xmlContent.SelectNodes("//activity[@type='test-case']")
+    
+            if ($all_activities.Count -eq 0) {
+                throw "Aucun cas de test trouvé dans ce fichier"
+            }
+    
+            write-log -message "Trouvé $($all_activities.Count) cas de test à parser" -type "i"
+    
+            # Extraction des métadonnées globales du rapport
+            $rootNode = $xmlContent.SelectSingleNode("//activity[@type='root']")
+            $computerHost = $rootNode.host
+            $timestamp = $rootNode.timestamp
+            
+            # Récupération des paramètres d'exécution (Login et Environnement)
+            $environment = $($xmlContent.SelectSingleNode("//param[@name='Environment']/text()")).Value
+            $login = $($xmlContent.SelectSingleNode("//param[@name='Login']/text()")).Value
+    
+            # Nettoyage des chaînes de caractères
+            if ($login) { $login = $login.Trim() }
+            if ($environment) { $environment = $environment.Trim() }
+    
+            # ─── Résolution de l'adresse IP de l'hôte ──────────────────────────────
+            $adressIP = [System.Net.Dns]::GetHostAddresses($computerHost).ipaddresstostring[0]
+        }
+        catch {
+            Write-Log -message "Erreur lors du parsing du fichier $($file.Name)." -type "e" -returnCode "001"
+            $Global:exitCode = 1
+        }
+
+        # Traitement de chaque activité (test case) individuellement
+        foreach ($activity in $all_activities) {
+            $Global:result = @()
+            try {
+                # Appel d'une fonction (du module src) pour préparer l'événement
+                buildEvent -environment $environment -xml $activity -timestamp $timestamp -IP $adressIP -rid $activity.rid -videoFile $activity.videoFile -parentDisplayName $activity.displayName -parentType $activity.type -login $login -state ([string]$activity.result)
+            }
+            catch {
+                Write-Log -message "Erreur lors de la construction de l'événement" -type "e" -returnCode "001"
+                $Global:exitCode = 5
+            }
+            
+            # ─── Envoi des données vers Splunk ──────────────────────────────────────────
+            try {
+                # Formatage de l'objet JSON pour chaque résultat
+                $body = $Global:result | ForEach-Object {
+                    $finalParentPath = if ($_.parentPath -eq "") { "root" } else { $_.parentPath }
+
+                    $el = @{
+                        parentPath   = $finalParentPath
+                        displayName  = $_.displayName
+                        type         = $_.type
+                        durationms   = $_.durationms
+                        level        = $_.level
+                        rid          = $_.rid
+                        userName     = $_.userName
+                        IPaddress    = $_.IP
+                        environment  = $_.environment
+                        result       = $_.result
+                        videoFile    = $_.videoFile
+                    }
+
+                    if ($_.errorMessage) {
+                        $el | Add-Member -NotePropertyName "errorMessage" -NotePropertyValue $_.errorMessage
+                    }
+
+                    # Structure finale requise par l'API Splunk HEC (HTTP Event Collector)
+                    @{
+                        "sourcetype" = "Ranorex_JSon"
+                        "source"     = $splunkSource
+                        "time"       = $_.time
+                        "event"      = $el  
+                        "host"       = $computerHost
+                    } | ConvertTo-json -Depth 5 -Compress
+                }
+
+                write-log -message "Envoi du cas de test $($activity.displayName) à Splunk" -type "i"
+                sendDataToSplunk -data $body -splunkserver $apiLinkSplunk -splunkToken $splunkToken
+            }
+            catch {
+                $Global:exitCode = 4
+                throw "Erreur d'envoi Splunk pour le fichier : $($file.Name)."
+            }
+        }
+            
+        # Déplacement du fichier traité vers les archives
+        write-log -message "Archivage du fichier '$($file.Name)'" -type "i"
+        $dest = Join-Path $archivesFolder $file.Name
+        
+        try {
+            Move-Item -Path $file.FullName -Destination $dest -Force -ErrorAction Stop
+        }
+        catch {
+            $Global:exitCode = 2
+            throw "Erreur lors du déplacement du fichier $($file.Name)."
+        }
+    }
+    
+    # ─── Nettoyage des vieilles archives ──────────────────────────────────────────
+    try {
+        $archivesFiles = Get-ChildItem -Path $archivesFolder -Recurse -Include *.rxlog.data, *.png
+        foreach ($archiveFile in $archivesFiles) {
+            $daysOld = ((Get-Date) - $archiveFile.CreationTime).Days
+            if ($daysOld -ge $timeToDelete) {
+                Remove-Item -Path $archiveFile.FullName -Force
+            }
+        }
+    }
+    catch {
+        $Global:exitCode = 3
+        throw "Erreur lors de la suppression des anciens fichiers"
+    }
+
+    exit $Global:exitCode
+}
+catch {
+    write-log -message $_.Exception.Message -type "e" -returnCode "001"
+    exit $Global:exitCode
+}
