@@ -1,0 +1,3 @@
+<check server="WIN-PROD-01">
+    <data type="CPU" value="92" unit="percent" />
+</check>

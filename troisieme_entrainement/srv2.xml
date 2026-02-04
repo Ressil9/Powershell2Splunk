@@ -1,0 +1,4 @@
+<server name="DEV-01">
+    <specs ram_gb="8" usage_percent="40" />
+    <owner>Steve-Dev</owner>
+</server>

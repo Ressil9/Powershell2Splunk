@@ -1,0 +1,4 @@
+{
+    "host": "LINUX-WEB-04",
+    "metrics": { "cpu_load": 45, "status": "online" }
+}

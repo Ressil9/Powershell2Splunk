@@ -1,0 +1,4 @@
+<server name="WEB-01">
+    <specs ram_gb="16" usage_percent="95" />
+    <owner>Equipe-Web</owner>
+</server>
