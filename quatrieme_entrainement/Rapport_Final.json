@@ -1,7 +1,7 @@
 [
     {
         "NomServeur":  "WIN-PROD-01",
-        "ChargeCPU":  "92",
+        "ChargeCPU":  92,
         "OS":  "Windows",
         "Etat":  "CRITIQUE"
     },
